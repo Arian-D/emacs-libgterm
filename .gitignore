@@ -1,0 +1,11 @@
+zig-out/
+zig-cache/
+.zig-cache/
+*.dylib
+*.so
+*.o
+*.a
+*~
+\#*\#
+.\#*
+vendor/

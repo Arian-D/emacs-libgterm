@@ -1,0 +1,25 @@
+.{
+    .name = .emacs_libgterm,
+    .version = "0.1.0",
+    .minimum_zig_version = "0.15.1",
+
+    .paths = .{
+        "build.zig",
+        "build.zig.zon",
+        "src",
+    },
+
+    .dependencies = .{
+        // Option 1: Clone ghostty locally and use a path dependency (recommended for dev):
+        //   git clone https://github.com/ghostty-org/ghostty.git vendor/ghostty
+        .ghostty = .{ .path = "vendor/ghostty" },
+
+        // Option 2: URL dependency (update hash after first build attempt):
+        // .ghostty = .{
+        //     .url = "https://github.com/ghostty-org/ghostty/archive/main.tar.gz",
+        //     .hash = "REPLACE_WITH_ACTUAL_HASH",
+        // },
+    },
+
+    .fingerprint = 0x2941c39e8c533386,
+}
