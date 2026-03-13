@@ -69,3 +69,30 @@ pub fn t_val(env: *emacs_env) emacs_value {
 pub fn check_exit(env: *emacs_env) bool {
     return env.non_local_exit_check.?(env) != c.emacs_funcall_exit_return;
 }
+
+/// Make a global reference (persists across env lifetimes).
+pub fn make_global_ref(env: *emacs_env, val: emacs_value) emacs_value {
+    return env.make_global_ref.?(env, val);
+}
+
+/// Call (insert STRING) in the current buffer.
+pub fn insert(env: *emacs_env, str: emacs_value) void {
+    var args = [_]emacs_value{str};
+    _ = env.funcall.?(env, env.intern.?(env, "insert"), 1, &args);
+}
+
+/// Call (point) to get current buffer position.
+pub fn point(env: *emacs_env) emacs_value {
+    return env.funcall.?(env, env.intern.?(env, "point"), 0, null);
+}
+
+/// Call (put-text-property START END PROP VALUE).
+pub fn put_text_property(env: *emacs_env, start: emacs_value, end: emacs_value, prop: emacs_value, value: emacs_value) void {
+    var args = [_]emacs_value{ start, end, prop, value };
+    _ = env.funcall.?(env, env.intern.?(env, "put-text-property"), 4, &args);
+}
+
+/// Build a list from a slice of values.
+pub fn list(env: *emacs_env, items: []emacs_value) emacs_value {
+    return env.funcall.?(env, env.intern.?(env, "list"), @intCast(items.len), items.ptr);
+}

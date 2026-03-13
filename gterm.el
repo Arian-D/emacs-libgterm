@@ -77,12 +77,11 @@
   "Refresh the buffer with current terminal content."
   (when gterm--term
     (let* ((inhibit-read-only t)
-           (content (gterm-content gterm--term))
            (pos (gterm-cursor-pos gterm--term))
            (cursor-row (car pos))
            (cursor-col (cdr pos)))
       (erase-buffer)
-      (insert content)
+      (gterm-render gterm--term)
       ;; Position point at cursor location
       (goto-char (point-min))
       (forward-line cursor-row)

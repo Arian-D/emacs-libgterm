@@ -22,12 +22,43 @@ const ghostty_vt = @import("ghostty-vt");
 export var plugin_is_GPL_compatible: c_int = 0;
 
 const Terminal = ghostty_vt.Terminal;
+const Style = ghostty_vt.Style;
+const color = ghostty_vt.color;
 const Allocator = std.mem.Allocator;
+const page_mod = ghostty_vt.page;
 
 // We use the general purpose allocator since terminal instances are
 // long-lived and few in number.
 var gpa = std.heap.GeneralPurposeAllocator(.{}){};
 const allocator: Allocator = gpa.allocator();
+
+// ── Global Emacs symbol refs (initialized at module load) ───────────
+// These persist across env lifetimes via make_global_ref.
+var sym_face: emacs.emacs_value = undefined;
+var sym_foreground: emacs.emacs_value = undefined;
+var sym_background: emacs.emacs_value = undefined;
+var sym_weight: emacs.emacs_value = undefined;
+var sym_bold: emacs.emacs_value = undefined;
+var sym_light: emacs.emacs_value = undefined;
+var sym_slant: emacs.emacs_value = undefined;
+var sym_italic: emacs.emacs_value = undefined;
+var sym_underline: emacs.emacs_value = undefined;
+var sym_strike_through: emacs.emacs_value = undefined;
+var sym_t: emacs.emacs_value = undefined;
+
+fn initGlobalSymbols(env: *emacs.emacs_env) void {
+    sym_face = emacs.make_global_ref(env, env.intern.?(env, "face"));
+    sym_foreground = emacs.make_global_ref(env, env.intern.?(env, ":foreground"));
+    sym_background = emacs.make_global_ref(env, env.intern.?(env, ":background"));
+    sym_weight = emacs.make_global_ref(env, env.intern.?(env, ":weight"));
+    sym_bold = emacs.make_global_ref(env, env.intern.?(env, "bold"));
+    sym_light = emacs.make_global_ref(env, env.intern.?(env, "light"));
+    sym_slant = emacs.make_global_ref(env, env.intern.?(env, ":slant"));
+    sym_italic = emacs.make_global_ref(env, env.intern.?(env, "italic"));
+    sym_underline = emacs.make_global_ref(env, env.intern.?(env, ":underline"));
+    sym_strike_through = emacs.make_global_ref(env, env.intern.?(env, ":strike-through"));
+    sym_t = emacs.make_global_ref(env, env.intern.?(env, "t"));
+}
 
 // ── Terminal wrapper ────────────────────────────────────────────────────
 
@@ -220,6 +251,233 @@ const GtermInstance = struct {
     }
 };
 
+// ── Color and style helpers ─────────────────────────────────────────
+
+const hex_chars = "0123456789abcdef";
+
+/// Convert RGB to a "#RRGGBB" Emacs string.
+fn rgbToEmacsStr(env: *emacs.emacs_env, rgb: color.RGB) emacs.emacs_value {
+    var buf: [7]u8 = undefined;
+    buf[0] = '#';
+    buf[1] = hex_chars[rgb.r >> 4];
+    buf[2] = hex_chars[rgb.r & 0xf];
+    buf[3] = hex_chars[rgb.g >> 4];
+    buf[4] = hex_chars[rgb.g & 0xf];
+    buf[5] = hex_chars[rgb.b >> 4];
+    buf[6] = hex_chars[rgb.b & 0xf];
+    return env.make_string.?(env, &buf, 7);
+}
+
+/// Resolve a Style.Color to an Emacs color string value (or nil).
+fn resolveColor(env: *emacs.emacs_env, col: Style.Color, palette: *const color.Palette) emacs.emacs_value {
+    return switch (col) {
+        .none => emacs.nil(env),
+        .palette => |idx| rgbToEmacsStr(env, palette[idx]),
+        .rgb => |rgb| rgbToEmacsStr(env, rgb),
+    };
+}
+
+/// Build a face property list from a Style. Returns nil for default style.
+fn buildFacePlist(env: *emacs.emacs_env, style: *const Style, palette: *const color.Palette) emacs.emacs_value {
+    var plist_items: [16]emacs.emacs_value = undefined;
+    var n: usize = 0;
+
+    // Handle inverse: swap fg/bg
+    var fg = style.fg_color;
+    var bg = style.bg_color;
+    if (style.flags.inverse) {
+        const tmp = fg;
+        fg = bg;
+        bg = tmp;
+    }
+
+    // Foreground color
+    if (fg != .none) {
+        plist_items[n] = sym_foreground;
+        n += 1;
+        plist_items[n] = resolveColor(env, fg, palette);
+        n += 1;
+    }
+
+    // Background color
+    if (bg != .none) {
+        plist_items[n] = sym_background;
+        n += 1;
+        plist_items[n] = resolveColor(env, bg, palette);
+        n += 1;
+    }
+
+    // Bold
+    if (style.flags.bold) {
+        plist_items[n] = sym_weight;
+        n += 1;
+        plist_items[n] = sym_bold;
+        n += 1;
+    } else if (style.flags.faint) {
+        plist_items[n] = sym_weight;
+        n += 1;
+        plist_items[n] = sym_light;
+        n += 1;
+    }
+
+    // Italic
+    if (style.flags.italic) {
+        plist_items[n] = sym_slant;
+        n += 1;
+        plist_items[n] = sym_italic;
+        n += 1;
+    }
+
+    // Underline
+    if (style.flags.underline != .none) {
+        plist_items[n] = sym_underline;
+        n += 1;
+        plist_items[n] = sym_t;
+        n += 1;
+    }
+
+    // Strikethrough
+    if (style.flags.strikethrough) {
+        plist_items[n] = sym_strike_through;
+        n += 1;
+        plist_items[n] = sym_t;
+        n += 1;
+    }
+
+    if (n == 0) return emacs.nil(env);
+    return emacs.list(env, plist_items[0..n]);
+}
+
+/// Render the terminal into the current Emacs buffer with styled text.
+/// Called as (gterm-render TERM) -> nil. Mutates the current buffer directly.
+fn gtermRender(
+    env_opt: ?*emacs.emacs_env,
+    _: emacs.ptrdiff_t,
+    args: [*c]emacs.emacs_value,
+    _: ?*anyopaque,
+) callconv(.c) emacs.emacs_value {
+    const env = env_opt.?;
+    const instance = getInstanceFromArg(env, args[0]) orelse return emacs.nil(env);
+
+    const screen = instance.terminal.screens.active;
+    const page_list = &screen.pages;
+    const palette = &instance.terminal.colors.palette.current;
+    const cols = instance.cols;
+    const rows = instance.rows;
+    const default_style_id = 0;
+
+    // Reusable buffer for accumulating text runs
+    var run_buf: std.array_list.Managed(u8) = .init(allocator);
+    defer run_buf.deinit();
+    run_buf.ensureTotalCapacity(256) catch return emacs.nil(env);
+
+    var row: u16 = 0;
+    while (row < rows) : (row += 1) {
+        const pin = page_list.pin(.{ .viewport = .{
+            .x = 0,
+            .y = row,
+        } }) orelse continue;
+
+        const page = &pin.node.data;
+        const page_row = page.getRow(pin.y);
+        const page_cells = page.getCells(page_row);
+
+        // Find last non-empty column
+        var last_non_empty: usize = 0;
+        for (0..@min(cols, page_cells.len)) |c| {
+            const cell = &page_cells[c];
+            if (cell.wide == .spacer_tail) continue;
+            if (cell.codepoint() != 0) last_non_empty = c + 1;
+        }
+
+        var current_style_id: u16 = default_style_id;
+        var display_col: usize = 0;
+        run_buf.clearRetainingCapacity();
+
+        var col: usize = 0;
+        while (col < last_non_empty) : (col += 1) {
+            if (col >= page_cells.len) {
+                run_buf.append(' ') catch {};
+                display_col += 1;
+                continue;
+            }
+            const cell = &page_cells[col];
+
+            if (cell.wide == .spacer_tail or cell.wide == .spacer_head) {
+                continue;
+            }
+
+            // Style change: flush the current run
+            if (cell.style_id != current_style_id) {
+                flushRun(env, &run_buf, current_style_id, page, palette);
+                current_style_id = cell.style_id;
+            }
+
+            // Column alignment padding
+            while (display_col < col) : (display_col += 1) {
+                run_buf.append(' ') catch {};
+            }
+
+            const cp = cell.codepoint();
+            if (cp == 0) {
+                run_buf.append(' ') catch {};
+                display_col += 1;
+            } else {
+                var utf8_buf: [4]u8 = undefined;
+                const len = std.unicode.utf8Encode(cp, &utf8_buf) catch 1;
+                run_buf.appendSlice(utf8_buf[0..len]) catch {};
+
+                if (cell.content_tag == .codepoint_grapheme) {
+                    if (page.lookupGrapheme(cell)) |graphemes| {
+                        for (graphemes) |gcp| {
+                            const glen = std.unicode.utf8Encode(gcp, &utf8_buf) catch continue;
+                            run_buf.appendSlice(utf8_buf[0..glen]) catch {};
+                        }
+                    }
+                }
+
+                display_col += GtermInstance.emacsCharWidth(cp);
+            }
+        }
+
+        // Flush remaining run for this row
+        flushRun(env, &run_buf, current_style_id, page, palette);
+
+        // Newline after each row
+        const nl = env.make_string.?(env, "\n", 1);
+        emacs.insert(env, nl);
+    }
+
+    return emacs.nil(env);
+}
+
+/// Flush a styled text run: insert the text and apply face properties.
+fn flushRun(
+    env: *emacs.emacs_env,
+    run_buf: *std.array_list.Managed(u8),
+    style_id: u16,
+    page: *const page_mod.Page,
+    palette: *const color.Palette,
+) void {
+    if (run_buf.items.len == 0) return;
+
+    const str = env.make_string.?(env, run_buf.items.ptr, @intCast(run_buf.items.len));
+    const start = emacs.point(env);
+    emacs.insert(env, str);
+    const end = emacs.point(env);
+
+    // Apply face if non-default style
+    if (style_id != 0) {
+        const style = page.styles.get(page.memory, style_id);
+        const face = buildFacePlist(env, style, palette);
+        if (!emacs.check_exit(env) and env.is_not_nil.?(env, face)) {
+            emacs.put_text_property(env, start, end, sym_face, face);
+        }
+    }
+
+    run_buf.clearRetainingCapacity();
+}
+
 // ── Helpers ─────────────────────────────────────────────────────────────
 
 fn getInstanceFromArg(env: *emacs.emacs_env, arg: emacs.emacs_value) ?*GtermInstance {
@@ -381,6 +639,9 @@ export fn emacs_module_init(runtime: ?*emacs.emacs_runtime) callconv(.c) c_int {
     const rt = runtime.?;
     const env: *emacs.emacs_env = rt.get_environment.?(rt);
 
+    // Initialize global symbol references for styling
+    initGlobalSymbols(env);
+
     // Register functions
     emacs.defun(env, "gterm-new", 2, 2, &gtermNew,
         "Create a new gterm terminal instance.\nCOLS and ROWS specify the terminal dimensions.\nReturns an opaque terminal handle.",
@@ -404,6 +665,10 @@ export fn emacs_module_init(runtime: ?*emacs.emacs_runtime) callconv(.c) c_int {
 
     emacs.defun(env, "gterm-free", 1, 1, &gtermFree,
         "Free a gterm terminal instance.\nTERM is a terminal handle from `gterm-new'.\nThis is optional; the GC finalizer also handles cleanup.",
+    );
+
+    emacs.defun(env, "gterm-render", 1, 1, &gtermRender,
+        "Render terminal content with ANSI styling into the current buffer.\nTERM is a terminal handle from `gterm-new'.\nInserts styled text directly using face properties.",
     );
 
     emacs.provide(env, "gterm-module");
