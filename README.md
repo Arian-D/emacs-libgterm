@@ -10,7 +10,7 @@ This project follows the same architecture as [emacs-libvterm](https://github.co
 - Kitty graphics protocol support
 - Active development and maintenance
 
-> **Status:** Early prototype. Terminal works with ANSI colors, full key handling, scrollback, cursor sync, and drag-and-drop. Some character width mismatches with Powerline/NerdFont glyphs remain.
+> **Status:** Early prototype, fully vibe-coded with [Claude Code](https://claude.ai/code). Terminal works with ANSI colors, full key handling, scrollback, cursor sync, and drag-and-drop. Only tested on macOS (Apple Silicon). Some character width mismatches with Powerline/NerdFont glyphs remain. Here be dragons.
 
 ## Requirements
 
