@@ -25,16 +25,48 @@
 
 ;; ── Module loading ──────────────────────────────────────────────────────
 
+(defvar gterm-source-dir
+  (file-name-directory (or load-file-name buffer-file-name))
+  "Directory containing the gterm source files.")
+
 (defvar gterm-module-path
   (expand-file-name
    (concat "zig-out/lib/libgterm-module" module-file-suffix)
-   (file-name-directory (or load-file-name buffer-file-name)))
+   gterm-source-dir)
   "Path to the compiled gterm dynamic module.")
 
+(defcustom gterm-always-compile-module nil
+  "If non-nil, compile the gterm module without prompting."
+  :type 'boolean
+  :group 'gterm)
+
+(defun gterm-module-compile ()
+  "Compile the gterm dynamic module using zig build."
+  (interactive)
+  (let ((default-directory gterm-source-dir))
+    ;; Check for zig
+    (unless (executable-find "zig")
+      (error "gterm: `zig` not found in PATH. Install Zig 0.15.2+"))
+    ;; Check for vendor/ghostty
+    (unless (file-directory-p (expand-file-name "vendor/ghostty" gterm-source-dir))
+      (error "gterm: vendor/ghostty not found. Run: git clone --depth 1 https://github.com/ghostty-org/ghostty.git vendor/ghostty"))
+    ;; Compile
+    (let ((buf (get-buffer-create "*gterm-compile*")))
+      (with-current-buffer buf (erase-buffer))
+      (message "gterm: compiling module with `zig build`...")
+      (let ((exit-code (call-process "zig" nil buf t "build")))
+        (if (= exit-code 0)
+            (message "gterm: module compiled successfully")
+          (pop-to-buffer buf)
+          (error "gterm: compilation failed (exit code %d). See *gterm-compile* buffer" exit-code))))))
+
 (unless (featurep 'gterm-module)
-  (if (file-exists-p gterm-module-path)
-      (module-load gterm-module-path)
-    (error "gterm: module not found at %s. Run `zig build` first" gterm-module-path)))
+  (unless (file-exists-p gterm-module-path)
+    (if (or gterm-always-compile-module
+            (y-or-n-p "gterm module not compiled. Compile now? "))
+        (gterm-module-compile)
+      (error "gterm: module not found at %s" gterm-module-path)))
+  (module-load gterm-module-path))
 
 ;; ── Customization ───────────────────────────────────────────────────────
 

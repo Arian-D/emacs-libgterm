@@ -25,6 +25,10 @@ zig build test
 
 After rebuilding the `.dylib`, Emacs must be restarted — dynamic modules cannot be reloaded at runtime.
 
+## Auto-Compilation
+
+gterm.el auto-detects if the module is missing and offers to compile via `zig build`. Set `gterm-always-compile-module` to `t` to skip the prompt. The compile function `gterm-module-compile` checks for zig and vendor/ghostty before building.
+
 ## Project Structure
 
 ```
@@ -32,10 +36,11 @@ After rebuilding the `.dylib`, Emacs must be restarted — dynamic modules canno
 ├── build.zig.zon      # Package manifest
 ├── src/
 │   ├── gterm.zig      # Main module: ghostty-vt ↔ Emacs bridge
-│   │                  #   GtermInstance wrapper, cell-by-cell renderer,
-│   │                  #   Emacs module functions (gterm-new, gterm-feed, etc.)
+│   │                  #   GtermInstance wrapper, styled cell renderer,
+│   │                  #   Emacs module functions, cursor tracking
 │   └── emacs_env.zig  # Emacs module API via @cImport of emacs-module.h
-├── gterm.el           # Elisp: major mode, PTY, keybindings, display
+├── gterm.el           # Elisp: major mode, PTY, keybindings, display,
+│                      #   copy/paste, scrollback, drag-drop, auto-compile
 └── vendor/ghostty/    # Ghostty source (git-ignored, cloned separately)
 ```
 
@@ -47,13 +52,25 @@ Ghostty's `build.zig` must be patched to guard XCFramework/macOS app initializat
 ### Emacs Module API
 Bindings use `@cImport` of the real `emacs-module.h` header (from `/Applications/Emacs.app/Contents/Resources/include/`) for guaranteed ABI correctness. The include path is configurable via `-Demacs-include=`.
 
-### Cell-by-Cell Rendering
-The renderer (`GtermInstance.renderContent`) iterates ghostty-vt's page grid cell-by-cell:
+### Styled Cell-by-Cell Rendering
+Two render paths:
+- `gterm-render` (primary): Zig function that inserts styled text directly into the Emacs buffer with face properties. Accumulates runs of identically-styled characters and flushes with `insert` + `put-text-property`. Returns the buffer position of the cursor.
+- `gterm-content` (debug): Returns plain text string without styling.
+
+Both iterate ghostty-vt's page grid cell-by-cell:
 - Empty cells mid-line → spaces
 - Trailing empty cells → trimmed (EOL detection)
 - Wide characters → skip spacer_tail cells
 - Grapheme clusters → append combining codepoints
-- Column tracking: compares terminal column position with estimated Emacs display column (via `emacsCharWidth`), inserting padding spaces to compensate for width mismatches
+
+### Global Symbol References
+Commonly used Emacs symbols (`:foreground`, `:background`, `bold`, etc.) are pre-interned at module load via `make_global_ref` for performance.
+
+### Persistent VT Stream
+The `ReadonlyStream` is stored on `GtermInstance` (not recreated per feed call) so escape sequences split across PTY output chunks are handled correctly.
+
+### Linefeed Mode
+ANSI mode 20 is enabled by default because Emacs strips `\r` from PTY output. Without this, `\n` alone doesn't return the cursor to column 0.
 
 ### Terminal Access Pattern
 ```zig
@@ -64,10 +81,14 @@ const page = &pin.node.data;
 const page_row = page.getRow(pin.y);
 const page_cells = page.getCells(page_row);
 // cell.codepoint(), cell.wide, cell.content_tag, page.lookupGrapheme(cell)
+// page.styles.get(page.memory, cell.style_id) -> *Style
 ```
 
+### Batched Refresh
+Process filter schedules refresh via 8ms timer to coalesce rapid output. Direct user actions (scrollback, resize) refresh immediately.
+
 ### Shell Configuration
-The user's Emacs `SHELL` env var resolves to bare `bash` which launches Node.js. Default shell is hardcoded to `/bin/zsh`.
+Default shell is `/bin/zsh` (hardcoded). The user's Emacs `SHELL` env var resolves to bare `bash` which launches Node.js.
 
 ## Conventions
 
@@ -75,3 +96,5 @@ The user's Emacs `SHELL` env var resolves to bare `bash` which launches Node.js.
 - Emacs env function pointers are optional in @cImport: unwrap with `.?` (e.g., `env.intern.?(env, "nil")`)
 - Export `plugin_is_GPL_compatible` as a mutable `var` for Emacs GPL check
 - Export `emacs_module_init` with `callconv(.c)` for the module entry point
+- Style IDs: `0` is the default style (no lookup needed), non-zero requires `page.styles.get()`
+- Colors: resolve `Style.Color` via palette for indexed colors, direct for RGB, format as `#RRGGBB`
