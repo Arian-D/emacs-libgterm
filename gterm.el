@@ -285,16 +285,18 @@ PROCESS is the shell process."
     (gterm-send-string text)))
 
 (defun gterm-handle-drop (event)
-  "Handle a drag-and-drop EVENT by sending the file path to the terminal."
+  "Handle a drag-and-drop EVENT by sending the file path to the terminal.
+Event format: (drag-n-drop POSITION (file OPERATIONS PATH...))."
   (interactive "e")
-  (let* ((payload (car (last (car (cdr event)))))
-         ;; Extract file paths from the drop data
-         (paths (cond
-                 ((stringp payload) (list payload))
-                 ((and (listp payload) (stringp (car payload))) payload)
-                 (t nil))))
+  (let* ((data (caddr event))           ; (file (ops...) path1 path2 ...)
+         (paths (when (and (listp data) (eq (car data) 'file))
+                  (cddr data))))         ; skip 'file and operations list
     (when paths
-      (let ((text (mapconcat #'identity paths " ")))
+      ;; Escape spaces with backslashes (like iTerm2 does)
+      (let ((text (mapconcat
+                   (lambda (path)
+                     (replace-regexp-in-string " " "\\\\ " path))
+                   paths " ")))
         (gterm--send-paste text)))))
 
 (defun gterm--setup-drag-drop ()
