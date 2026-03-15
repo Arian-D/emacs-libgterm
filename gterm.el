@@ -23,6 +23,31 @@
 
 (require 'cl-lib)
 
+;; ── Hyperlink support ───────────────────────────────────────────────────
+
+(defvar gterm-link-map
+  (let ((map (make-sparse-keymap)))
+    (define-key map [mouse-1] #'gterm-open-link-at-click)
+    (define-key map [mouse-2] #'gterm-open-link-at-click)
+    (define-key map (kbd "RET") #'gterm-open-link-at-point)
+    map)
+  "Keymap for clickable hyperlinks in gterm buffers.")
+
+(defun gterm-open-link-at-click (event)
+  "Open the hyperlink at the mouse click position."
+  (interactive "e")
+  (let* ((pos (posn-point (event-start event)))
+         (url (get-text-property pos 'help-echo)))
+    (when (and url (string-match-p "\\`https?://" url))
+      (browse-url url))))
+
+(defun gterm-open-link-at-point ()
+  "Open the hyperlink at point."
+  (interactive)
+  (let ((url (get-text-property (point) 'help-echo)))
+    (when (and url (string-match-p "\\`https?://" url))
+      (browse-url url))))
+
 ;; ── Module loading ──────────────────────────────────────────────────────
 
 (defvar gterm-source-dir

@@ -52,6 +52,11 @@ var sym_line_beginning_position: emacs.emacs_value = undefined;
 var sym_line_end_position: emacs.emacs_value = undefined;
 var sym_delete_region: emacs.emacs_value = undefined;
 var sym_point_min: emacs.emacs_value = undefined;
+var sym_help_echo: emacs.emacs_value = undefined;
+var sym_mouse_face: emacs.emacs_value = undefined;
+var sym_highlight: emacs.emacs_value = undefined;
+var sym_keymap: emacs.emacs_value = undefined;
+var sym_gterm_link_map: emacs.emacs_value = undefined;
 
 fn initGlobalSymbols(env: *emacs.emacs_env) void {
     sym_face = emacs.make_global_ref(env, env.intern.?(env, "face"));
@@ -71,6 +76,11 @@ fn initGlobalSymbols(env: *emacs.emacs_env) void {
     sym_line_end_position = emacs.make_global_ref(env, env.intern.?(env, "line-end-position"));
     sym_delete_region = emacs.make_global_ref(env, env.intern.?(env, "delete-region"));
     sym_point_min = emacs.make_global_ref(env, env.intern.?(env, "point-min"));
+    sym_help_echo = emacs.make_global_ref(env, env.intern.?(env, "help-echo"));
+    sym_mouse_face = emacs.make_global_ref(env, env.intern.?(env, "mouse-face"));
+    sym_highlight = emacs.make_global_ref(env, env.intern.?(env, "highlight"));
+    sym_keymap = emacs.make_global_ref(env, env.intern.?(env, "keymap"));
+    sym_gterm_link_map = emacs.make_global_ref(env, env.intern.?(env, "gterm-link-map"));
 }
 
 // ── Terminal wrapper ────────────────────────────────────────────────────
@@ -419,6 +429,8 @@ fn gtermRender(
         }
 
         var current_style_id: u16 = default_style_id;
+        var current_link_id: u16 = 0; // 0 = no hyperlink
+        var link_start: emacs.emacs_value = emacs.nil(env);
         run_buf.clearRetainingCapacity();
         var cells_emitted: u16 = 0;
 
@@ -435,15 +447,35 @@ fn gtermRender(
                 continue;
             }
 
-            // Style change: flush the current run
-            if (cell.style_id != current_style_id) {
+            // Check hyperlink state change
+            const cell_link_id: u16 = if (cell.hyperlink)
+                page.lookupHyperlink(cell) orelse 0
+            else
+                0;
+
+            // Style or hyperlink change: flush the current run
+            if (cell.style_id != current_style_id or cell_link_id != current_link_id) {
                 flushRun(env, &run_buf, current_style_id, page, palette);
+                // Apply hyperlink properties to the flushed run if it was a link
+                if (current_link_id != 0) {
+                    const link_end = emacs.point(env);
+                    applyHyperlink(env, link_start, link_end, page, current_link_id);
+                }
                 current_style_id = cell.style_id;
+                current_link_id = cell_link_id;
+                if (cell_link_id != 0) {
+                    link_start = emacs.point(env);
+                }
             }
 
             // Capture cursor position when we reach the cursor column
             if (row == cursor_row and col == cursor_col and cursor_col > 0) {
                 flushRun(env, &run_buf, current_style_id, page, palette);
+                if (current_link_id != 0) {
+                    const link_end = emacs.point(env);
+                    applyHyperlink(env, link_start, link_end, page, current_link_id);
+                    link_start = emacs.point(env);
+                }
                 cursor_point = emacs.point(env);
             }
 
@@ -465,6 +497,14 @@ fn gtermRender(
                 }
             }
             cells_emitted += 1;
+        }
+
+        // Apply hyperlink to final run of the row if needed
+        if (current_link_id != 0) {
+            flushRun(env, &run_buf, current_style_id, page, palette);
+            const link_end = emacs.point(env);
+            applyHyperlink(env, link_start, link_end, page, current_link_id);
+            current_link_id = 0;
         }
 
         // If cursor is past the last non-empty cell on this row,
@@ -523,6 +563,31 @@ fn flushRun(
     }
 
     run_buf.clearRetainingCapacity();
+}
+
+/// Apply hyperlink properties (help-echo tooltip, mouse-face, keymap)
+/// to a region of text in the Emacs buffer.
+fn applyHyperlink(
+    env: *emacs.emacs_env,
+    start: emacs.emacs_value,
+    end: emacs.emacs_value,
+    page: *const page_mod.Page,
+    link_id: u16,
+) void {
+    // Get the hyperlink entry from the set
+    const entry = page.hyperlink_set.get(page.memory, link_id);
+    const uri = entry.uri.slice(page.memory);
+    if (uri.len == 0) return;
+
+    // Set help-echo (tooltip showing URL)
+    const uri_str = env.make_string.?(env, uri.ptr, @intCast(uri.len));
+    emacs.put_text_property(env, start, end, sym_help_echo, uri_str);
+
+    // Set mouse-face for hover highlight
+    emacs.put_text_property(env, start, end, sym_mouse_face, sym_highlight);
+
+    // Set keymap for click handling
+    emacs.put_text_property(env, start, end, sym_keymap, sym_gterm_link_map);
 }
 
 /// Render only dirty rows into an existing buffer.
