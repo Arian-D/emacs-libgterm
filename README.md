@@ -115,11 +115,11 @@ zig build -Doptimize=ReleaseFast
 |  gterm.el      |---->|  gterm-module.so    |---->|  ghostty-vt   |
 |  (Elisp)       |     |  (Zig -> C ABI)     |     |  (Zig lib)    |
 |                |     |                     |     |               |
-| - PTY mgmt    |     | - Terminal create   |     | - VT parse    |
-| - Keybinds    |     | - Feed bytes        |     | - Screen      |
-| - Display     |     | - Styled render     |     | - Cursor      |
-| - Copy/Paste  |     | - Cursor track      |     | - Scrollback  |
-| - Scrollback  |     | - Mode query        |     | - Reflow      |
+| - PTY mgmt     |     | - Terminal create   |     | - VT parse    |
+| - Keybinds     |     | - Feed bytes        |     | - Screen      |
+| - Display      |     | - Styled render     |     | - Cursor      |
+| - Copy/Paste   |     | - Cursor track      |     | - Scrollback  |
+| - Scrollback   |     | - Mode query        |     | - Reflow      |
 +----------------+     +---------------------+     +---------------+
 ```
 
