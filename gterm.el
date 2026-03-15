@@ -135,18 +135,27 @@ Automatically clones Ghostty and applies the build patch if needed."
 (defvar-local gterm--height 24
   "Current terminal height in rows.")
 
+(defvar-local gterm--rendered nil
+  "Non-nil after the first full render has been done.")
+
 ;; ── Buffer rendering ────────────────────────────────────────────────────
 
 (defun gterm--refresh ()
-  "Refresh the buffer with current terminal content."
+  "Refresh the buffer with current terminal content.
+Uses incremental rendering after the first full render."
   (when gterm--term
-    (let* ((inhibit-read-only t))
-      (erase-buffer)
-      (let ((cursor-pos (gterm-render gterm--term)))
-        ;; gterm-render returns the buffer position of the cursor,
-        ;; calculated during rendering for exact placement.
-        (when (integerp cursor-pos)
-          (goto-char cursor-pos)))
+    (let* ((inhibit-read-only t)
+           (cursor-pos
+            (if (and gterm--rendered
+                     (fboundp 'gterm-render-dirty))
+                ;; Incremental: only update dirty rows
+                (gterm-render-dirty gterm--term)
+              ;; Full render: erase and redraw everything
+              (erase-buffer)
+              (setq gterm--rendered t)
+              (gterm-render gterm--term))))
+      (when (integerp cursor-pos)
+        (goto-char cursor-pos))
       ;; Update cursor visibility and style from terminal state
       (when (fboundp 'gterm-cursor-info)
         (let* ((info (gterm-cursor-info gterm--term))
@@ -154,6 +163,11 @@ Automatically clones Ghostty and applies the build patch if needed."
                (style (cdr info)))
           (setq-local cursor-type
                       (if visible style nil)))))))
+
+(defun gterm--full-refresh ()
+  "Force a full screen re-render (not incremental)."
+  (setq gterm--rendered nil)
+  (gterm--refresh))
 
 (defun gterm--schedule-refresh ()
   "Schedule a batched refresh.  Coalesces rapid output into one render."
@@ -391,7 +405,7 @@ Selected text is copied to the kill ring on exit."
   (when gterm--term
     (gterm-scroll-viewport gterm--term (- (/ gterm--height 2)))
     (setq gterm--scrollback-p t)
-    (gterm--refresh)))
+    (gterm--full-refresh)))
 
 (defun gterm-scroll-down ()
   "Scroll the terminal viewport down toward live output."
@@ -400,7 +414,7 @@ Selected text is copied to the kill ring on exit."
     (gterm-scroll-viewport gterm--term (/ gterm--height 2))
     (setq gterm--scrollback-p
           (not (gterm-viewport-is-bottom gterm--term)))
-    (gterm--refresh)))
+    (gterm--full-refresh)))
 
 (defun gterm-scroll-to-bottom ()
   "Scroll the terminal viewport back to the live terminal."
@@ -408,7 +422,7 @@ Selected text is copied to the kill ring on exit."
   (when gterm--term
     (gterm-scroll-viewport gterm--term 0)
     (setq gterm--scrollback-p nil)
-    (gterm--refresh)))
+    (gterm--full-refresh)))
 
 ;; ── Drag and drop ───────────────────────────────────────────────────────
 
@@ -478,7 +492,7 @@ Event format: (drag-n-drop POSITION (file OPERATIONS PATH...))."
         (gterm-resize gterm--term new-width new-height)
         (when (and gterm--process (process-live-p gterm--process))
           (set-process-window-size gterm--process new-height new-width))
-        (gterm--refresh)))))
+        (gterm--full-refresh)))))
 
 ;; ── Mode definition ─────────────────────────────────────────────────────
 

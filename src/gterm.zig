@@ -45,6 +45,13 @@ var sym_italic: emacs.emacs_value = undefined;
 var sym_underline: emacs.emacs_value = undefined;
 var sym_strike_through: emacs.emacs_value = undefined;
 var sym_t: emacs.emacs_value = undefined;
+// Buffer navigation symbols for incremental rendering
+var sym_goto_char: emacs.emacs_value = undefined;
+var sym_forward_line: emacs.emacs_value = undefined;
+var sym_line_beginning_position: emacs.emacs_value = undefined;
+var sym_line_end_position: emacs.emacs_value = undefined;
+var sym_delete_region: emacs.emacs_value = undefined;
+var sym_point_min: emacs.emacs_value = undefined;
 
 fn initGlobalSymbols(env: *emacs.emacs_env) void {
     sym_face = emacs.make_global_ref(env, env.intern.?(env, "face"));
@@ -58,6 +65,12 @@ fn initGlobalSymbols(env: *emacs.emacs_env) void {
     sym_underline = emacs.make_global_ref(env, env.intern.?(env, ":underline"));
     sym_strike_through = emacs.make_global_ref(env, env.intern.?(env, ":strike-through"));
     sym_t = emacs.make_global_ref(env, env.intern.?(env, "t"));
+    sym_goto_char = emacs.make_global_ref(env, env.intern.?(env, "goto-char"));
+    sym_forward_line = emacs.make_global_ref(env, env.intern.?(env, "forward-line"));
+    sym_line_beginning_position = emacs.make_global_ref(env, env.intern.?(env, "line-beginning-position"));
+    sym_line_end_position = emacs.make_global_ref(env, env.intern.?(env, "line-end-position"));
+    sym_delete_region = emacs.make_global_ref(env, env.intern.?(env, "delete-region"));
+    sym_point_min = emacs.make_global_ref(env, env.intern.?(env, "point-min"));
 }
 
 // ── Terminal wrapper ────────────────────────────────────────────────────
@@ -475,6 +488,9 @@ fn gtermRender(
         emacs.insert(env, nl);
     }
 
+    // Clear all dirty flags after full render
+    page_list.clearDirty();
+
     // Return cursor buffer position (or nil if not found)
     return cursor_point;
 }
@@ -504,6 +520,172 @@ fn flushRun(
     }
 
     run_buf.clearRetainingCapacity();
+}
+
+/// Render only dirty rows into an existing buffer.
+/// The buffer must already contain the full terminal content (from a
+/// previous gterm-render call). Navigates to each dirty row, deletes
+/// the old content, and inserts the new styled content in-place.
+/// Returns the cursor buffer position, or nil.
+fn gtermRenderDirty(
+    env_opt: ?*emacs.emacs_env,
+    _: emacs.ptrdiff_t,
+    args: [*c]emacs.emacs_value,
+    _: ?*anyopaque,
+) callconv(.c) emacs.emacs_value {
+    const env = env_opt.?;
+    const instance = getInstanceFromArg(env, args[0]) orelse return emacs.nil(env);
+
+    const screen = instance.terminal.screens.active;
+    const page_list = &screen.pages;
+    const palette = &instance.terminal.colors.palette.current;
+    const cols = instance.cols;
+    const rows = instance.rows;
+
+    // Get cursor position to track
+    const cursor_row: u16 = @intCast(screen.cursor.y);
+    const cursor_col: u16 = @intCast(screen.cursor.x);
+    var cursor_point: emacs.emacs_value = emacs.nil(env);
+
+    // Reusable buffer for accumulating text runs
+    var run_buf: std.array_list.Managed(u8) = .init(allocator);
+    defer run_buf.deinit();
+    run_buf.ensureTotalCapacity(256) catch return emacs.nil(env);
+
+    var any_dirty = false;
+
+    var row: u16 = 0;
+    while (row < rows) : (row += 1) {
+        const pin = page_list.pin(.{ .viewport = .{
+            .x = 0,
+            .y = row,
+        } }) orelse continue;
+
+        // Check if this row is dirty
+        if (!pin.isDirty()) {
+            // Not dirty — still need to track cursor if it's on this row
+            if (row == cursor_row) {
+                // Navigate to the row to get cursor position
+                var goto_args = [_]emacs.emacs_value{env.funcall.?(env, sym_point_min, 0, null)};
+                _ = env.funcall.?(env, sym_goto_char, 1, &goto_args);
+                var fwd_args = [_]emacs.emacs_value{env.make_integer.?(env, @intCast(row))};
+                _ = env.funcall.?(env, sym_forward_line, 1, &fwd_args);
+                if (cursor_col > 0) {
+                    // Move forward by cursor_col characters on this line
+                    var fwd_char_args = [_]emacs.emacs_value{env.make_integer.?(env, @intCast(cursor_col))};
+                    _ = env.funcall.?(env, env.intern.?(env, "forward-char"), 1, &fwd_char_args);
+                }
+                cursor_point = emacs.point(env);
+            }
+            continue;
+        }
+
+        any_dirty = true;
+
+        // Navigate to this row in the buffer
+        var goto_args = [_]emacs.emacs_value{env.funcall.?(env, sym_point_min, 0, null)};
+        _ = env.funcall.?(env, sym_goto_char, 1, &goto_args);
+        var fwd_args = [_]emacs.emacs_value{env.make_integer.?(env, @intCast(row))};
+        _ = env.funcall.?(env, sym_forward_line, 1, &fwd_args);
+
+        // Delete old line content (not the newline)
+        const line_start = emacs.point(env);
+        const line_end = env.funcall.?(env, sym_line_end_position, 0, null);
+        var del_args = [_]emacs.emacs_value{ line_start, line_end };
+        _ = env.funcall.?(env, sym_delete_region, 2, &del_args);
+
+        // Record cursor position at start of cursor row (col 0)
+        if (row == cursor_row and cursor_col == 0) {
+            cursor_point = emacs.point(env);
+        }
+
+        // Render the row content
+        const page = &pin.node.data;
+        const page_row = page.getRow(pin.y);
+        const page_cells = page.getCells(page_row);
+
+        // Find last non-empty column
+        var last_non_empty: usize = 0;
+        for (0..@min(cols, page_cells.len)) |c| {
+            const cell = &page_cells[c];
+            if (cell.wide == .spacer_tail) continue;
+            if (cell.codepoint() != 0) last_non_empty = c + 1;
+        }
+
+        var current_style_id: u16 = 0;
+        run_buf.clearRetainingCapacity();
+
+        var col: usize = 0;
+        while (col < last_non_empty) : (col += 1) {
+            if (col >= page_cells.len) {
+                run_buf.append(' ') catch {};
+                continue;
+            }
+            const cell = &page_cells[col];
+
+            if (cell.wide == .spacer_tail or cell.wide == .spacer_head) {
+                continue;
+            }
+
+            if (cell.style_id != current_style_id) {
+                flushRun(env, &run_buf, current_style_id, page, palette);
+                current_style_id = cell.style_id;
+            }
+
+            // Capture cursor position
+            if (row == cursor_row and col == cursor_col and cursor_col > 0) {
+                flushRun(env, &run_buf, current_style_id, page, palette);
+                cursor_point = emacs.point(env);
+            }
+
+            const cp = cell.codepoint();
+            if (cp == 0) {
+                run_buf.append(' ') catch {};
+            } else {
+                var utf8_buf: [4]u8 = undefined;
+                const len = std.unicode.utf8Encode(cp, &utf8_buf) catch 1;
+                run_buf.appendSlice(utf8_buf[0..len]) catch {};
+
+                if (cell.content_tag == .codepoint_grapheme) {
+                    if (page.lookupGrapheme(cell)) |graphemes| {
+                        for (graphemes) |gcp| {
+                            const glen = std.unicode.utf8Encode(gcp, &utf8_buf) catch continue;
+                            run_buf.appendSlice(utf8_buf[0..glen]) catch {};
+                        }
+                    }
+                }
+            }
+        }
+
+        // Cursor past end of content
+        if (row == cursor_row and cursor_col >= last_non_empty and env.is_not_nil.?(env, cursor_point) == false) {
+            flushRun(env, &run_buf, current_style_id, page, palette);
+            const spaces_needed = cursor_col - @as(u16, @intCast(last_non_empty));
+            if (spaces_needed > 0) {
+                var space_buf: [256]u8 = undefined;
+                const n = @min(spaces_needed, 256);
+                @memset(space_buf[0..n], ' ');
+                const space_str = env.make_string.?(env, &space_buf, @intCast(n));
+                emacs.insert(env, space_str);
+            }
+            cursor_point = emacs.point(env);
+        }
+
+        flushRun(env, &run_buf, current_style_id, page, palette);
+
+        // Mark row as clean
+        pin.rowAndCell().row.dirty = false;
+    }
+
+    // Clear page-level dirty flags
+    if (any_dirty) {
+        var page_node = page_list.pages.first;
+        while (page_node) |p| : (page_node = p.next) {
+            p.data.dirty = false;
+        }
+    }
+
+    return cursor_point;
 }
 
 // ── Helpers ─────────────────────────────────────────────────────────────
@@ -802,6 +984,10 @@ export fn emacs_module_init(runtime: ?*emacs.emacs_runtime) callconv(.c) c_int {
 
     emacs.defun(env, "gterm-render", 1, 1, &gtermRender,
         "Render terminal content with ANSI styling into the current buffer.\nTERM is a terminal handle from `gterm-new'.\nInserts styled text directly using face properties.",
+    );
+
+    emacs.defun(env, "gterm-render-dirty", 1, 1, &gtermRenderDirty,
+        "Incrementally render only dirty rows in the current buffer.\nThe buffer must already contain full terminal content from gterm-render.\nReturns cursor buffer position.",
     );
 
     emacs.defun(env, "gterm-cursor-keys-mode", 1, 1, &gtermCursorKeysMode,
