@@ -233,6 +233,44 @@ PROCESS is the shell process."
           (goto-char (point-max))
           (insert "\n\n[Process terminated]\n"))))))
 
+;; ── File-at-click ─────────────────────────────────────────────────────
+
+(defun gterm-open-file-at-click (event)
+  "Open file reference at mouse click in a gterm buffer.
+Parses the text around the click point for patterns like
+`path/to/file.ext:123` or `path/to/file.ext` and opens the file,
+optionally at the given line number."
+  (interactive "e")
+  (let* ((pos (posn-point (event-start event)))
+         line-text file-path line-num)
+    (when pos
+      (save-excursion
+        (goto-char pos)
+        (setq line-text (buffer-substring-no-properties
+                         (line-beginning-position) (line-end-position))))
+      ;; Try file:line pattern first
+      (if (string-match
+           "\\(/[^ \t:\"']+\\|[a-zA-Z0-9_.][^ \t:\"']*\\.[a-zA-Z0-9]+\\):\\([0-9]+\\)"
+           line-text)
+          (progn
+            (setq file-path (match-string 1 line-text))
+            (setq line-num (string-to-number (match-string 2 line-text))))
+        ;; Fall back to plain file path (must have an extension)
+        (when (string-match
+               "\\(/[^ \t:\"']+\\.[a-zA-Z0-9]+\\|[a-zA-Z0-9_.][^ \t:\"']*\\.[a-zA-Z0-9]+\\)"
+               line-text)
+          (setq file-path (match-string 1 line-text))
+          (setq line-num 0)))
+      (when file-path
+        (setq file-path (expand-file-name file-path default-directory))
+        (if (file-exists-p file-path)
+            (progn
+              (find-file-other-window file-path)
+              (when (> line-num 0)
+                (goto-char (point-min))
+                (forward-line (1- line-num))))
+          (message "File not found: %s" file-path))))))
+
 ;; ── Input handling ──────────────────────────────────────────────────────
 
 (defun gterm-send-string (string)
@@ -616,6 +654,8 @@ Event format: (drag-n-drop POSITION (file OPERATIONS PATH...))."
     ;; Mouse wheel scrollback
     (define-key map (kbd "<wheel-up>") #'gterm-mouse-scroll-up)
     (define-key map (kbd "<wheel-down>") #'gterm-mouse-scroll-down)
+    ;; Click to open file paths
+    (define-key map [mouse-1] #'gterm-open-file-at-click)
     map)
   "Keymap for `gterm-mode'.")
 
