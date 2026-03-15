@@ -438,6 +438,38 @@ Selected text is copied to the kill ring on exit."
           (not (gterm-viewport-is-bottom gterm--term)))
     (gterm--full-refresh)))
 
+(defcustom gterm-mouse-scroll-lines 5
+  "Number of lines to scroll per mouse wheel event."
+  :type 'integer
+  :group 'gterm)
+
+(defun gterm-scroll-up-lines (n)
+  "Scroll the terminal viewport up N lines into scrollback history."
+  (interactive "p")
+  (when gterm--term
+    (gterm-scroll-viewport gterm--term (- n))
+    (setq gterm--scrollback-p t)
+    (gterm--full-refresh)))
+
+(defun gterm-scroll-down-lines (n)
+  "Scroll the terminal viewport down N lines toward live output."
+  (interactive "p")
+  (when gterm--term
+    (gterm-scroll-viewport gterm--term n)
+    (setq gterm--scrollback-p
+          (not (gterm-viewport-is-bottom gterm--term)))
+    (gterm--full-refresh)))
+
+(defun gterm-mouse-scroll-up (_event)
+  "Handle mouse wheel up: scroll into scrollback."
+  (interactive "e")
+  (gterm-scroll-up-lines gterm-mouse-scroll-lines))
+
+(defun gterm-mouse-scroll-down (_event)
+  "Handle mouse wheel down: scroll toward live output."
+  (interactive "e")
+  (gterm-scroll-down-lines gterm-mouse-scroll-lines))
+
 (defun gterm-scroll-to-bottom ()
   "Scroll the terminal viewport back to the live terminal."
   (interactive)
@@ -581,6 +613,9 @@ Event format: (drag-n-drop POSITION (file OPERATIONS PATH...))."
     (define-key map (kbd "S-<prior>") #'gterm-scroll-up)
     (define-key map (kbd "S-<next>") #'gterm-scroll-down)
     (define-key map (kbd "C-c C-v") #'gterm-scroll-to-bottom)
+    ;; Mouse wheel scrollback
+    (define-key map (kbd "<wheel-up>") #'gterm-mouse-scroll-up)
+    (define-key map (kbd "<wheel-down>") #'gterm-mouse-scroll-down)
     map)
   "Keymap for `gterm-mode'.")
 

@@ -91,7 +91,8 @@ git clone --depth 1 https://github.com/ghostty-org/ghostty.git vendor/ghostty
 | Arrow keys | Navigate / command history |
 | `C-y` / `Cmd-V` | Paste from kill ring |
 | `C-c C-k` | Enter copy mode (select text, `y` to copy, `q` to exit) |
-| `Shift-PageUp/Down` | Scroll through history |
+| `Shift-PageUp/Down` | Scroll through history (page) |
+| Mouse wheel / Trackpad | Scroll through history (5 lines) |
 | `C-c C-v` | Snap back to live terminal |
 | `C-c C-c` | Send Ctrl-C to shell |
 | `C-c C-d` | Send Ctrl-D (EOF) to shell |
@@ -134,6 +135,9 @@ zig build -Doptimize=ReleaseFast
 
 ;; Auto-compile without prompting
 (setq gterm-always-compile-module t)
+
+;; Mouse wheel scroll speed (default: 5 lines per event)
+(setq gterm-mouse-scroll-lines 5)
 ```
 
 ## Known Issues

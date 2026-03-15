@@ -2,6 +2,12 @@
 
 All notable changes to emacs-libgterm are documented in this file.
 
+## [Unreleased]
+
+### Features
+- Mouse wheel scrollback — scroll through terminal history with trackpad or mouse wheel
+- Configurable scroll speed via `gterm-mouse-scroll-lines` (default: 5 lines per event)
+
 ## [0.1.0] - 2026-03-15
 
 First public release. Built from scratch in a single vibe-coding session with Claude Code.
