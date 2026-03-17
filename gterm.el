@@ -75,31 +75,6 @@ Automatically clones Ghostty and applies the build patch if needed."
     ;; Check for zig
     (unless (executable-find "zig")
       (error "gterm: `zig` not found in PATH. Install Zig 0.15.2+ (https://ziglang.org/download/)"))
-    ;; Check for git
-    (unless (executable-find "git")
-      (error "gterm: `git` not found in PATH"))
-    ;; Clone ghostty if needed
-    (let ((ghostty-dir (expand-file-name "vendor/ghostty" gterm-source-dir)))
-      (unless (file-directory-p ghostty-dir)
-        (message "gterm: cloning ghostty (this may take a minute)...")
-        (let ((exit-code (call-process "git" nil buf t
-                                       "clone" "--depth" "1"
-                                       "https://github.com/ghostty-org/ghostty.git"
-                                       ghostty-dir)))
-          (unless (= exit-code 0)
-            (pop-to-buffer buf)
-            (error "gterm: failed to clone ghostty"))))
-      ;; Apply build patch if not already applied
-      (let ((patch-file (expand-file-name "patches/ghostty-build.patch" gterm-source-dir)))
-        (when (and (file-exists-p patch-file)
-                   (= 0 (call-process "git" nil nil nil
-                                       "-C" ghostty-dir
-                                       "diff" "--quiet" "build.zig")))
-          ;; build.zig has no local changes — apply patch
-          (message "gterm: applying ghostty build patch...")
-          (call-process "git" nil buf t
-                        "-C" ghostty-dir
-                        "apply" patch-file))))
     ;; Compile
     (message "gterm: compiling module with `zig build`...")
     (let ((exit-code (call-process "zig" nil buf t "build")))
